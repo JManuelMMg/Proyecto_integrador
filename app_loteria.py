@@ -34,6 +34,7 @@ TEMAS = {
         "seleccion": "#3B3277", "seleccion_texto": "#FFFFFF", "progreso": "#34C9A5",
     },
 }
+ORDEN_JUEGO = ("mazahua", "español", "inglés")  # orden en que suenan los audios en el modo Juego
 # Idioma -> (nombre visible, color, color al pasar el ratón, tecla de atajo)
 IDIOMA_UI = {
     "español": ("Español", "#E8702A", "#C95A18", "1"),
@@ -44,6 +45,7 @@ ATAJOS = {"1": "español", "2": "mazahua", "3": "inglés", "space": "mazahua"}
 INSTRUCCIONES = {
     "basica": "Mira la imagen y escucha cómo se dice.  Atajos: 1 Español · 2 Mazahua · 3 English",
     "superior": "Escribe la palabra y carga el audio de cada idioma. La imagen se cambia abajo.",
+    "juego": "Acerca una tarjeta al lector: se muestra y suena en mazahua, español e inglés.",
 }
 
 
@@ -61,6 +63,8 @@ class AplicacionLoteria(tk.Tk):
         self.lecturas: queue.Queue = queue.Queue()
         self.lector: LectorRFID | None = None
         self.esperando_tarjeta = False  # True: la próxima tarjeta leída se asigna a la carta actual
+        self.cola_audio: list[str] = []  # idiomas pendientes de sonar en secuencia
+        self.idioma_sonando: str | None = None
         self.grabando_carta: int | None = None  # carta cuyos textos se están grabando en una tarjeta
         self.carta_actual: int | None = None
         self.filas: dict[int, dict] = {}
@@ -198,7 +202,7 @@ class AplicacionLoteria(tk.Tk):
         barra = self._con_tema(tk.Frame(self, padx=24, pady=10), bg="superficie")
         barra.grid(row=1, column=0, sticky="ew")
         self._etiqueta(barra, "Modo", 10, "bold", fg="suave").pack(side="left", padx=(0, 10))
-        for valor, texto in (("basica", "Primaria"), ("superior", "Media superior · Edición")):
+        for valor, texto in (("basica", "Primaria"), ("superior", "Media superior · Edición"), ("juego", "▶  Juego · Tarjetas")):
             radio = tk.Radiobutton(barra, text=texto, variable=self.nivel, value=valor, command=self.cambiar_nivel,
                                    indicatoron=False, relief="flat", bd=0, offrelief="flat", cursor="hand2",
                                    font=(FUENTE, 10, "bold"), padx=14, pady=6)
@@ -208,7 +212,7 @@ class AplicacionLoteria(tk.Tk):
         self.estado.pack(side="right")
 
     def _crear_lateral(self, padre) -> None:
-        lateral = self._tarjeta(padre, width=340, padx=14, pady=14)
+        lateral = self.lateral = self._tarjeta(padre, width=340, padx=14, pady=14)
         lateral.grid(row=0, column=0, sticky="ns", padx=(0, 16))
         lateral.pack_propagate(False)
         cabecera = self._con_tema(tk.Frame(lateral), bg="superficie")
@@ -281,7 +285,7 @@ class AplicacionLoteria(tk.Tk):
             palabra.pack(fill="x")
             entrada = ttk.Entry(texto, textvariable=self.textos[idioma], font=(FUENTE, 12), width=12)
             entrada.bind("<Return>", lambda _e: self.guardar_textos())
-            self.tiles[idioma] = {"palabra": palabra, "entrada": entrada, "boton": boton, "cargar": cargar}
+            self.tiles[idioma] = {"palabra": palabra, "entrada": entrada, "boton": boton, "cargar": cargar, "marco": tile}
 
         reproduccion = self._con_tema(tk.Frame(tarjeta), bg="superficie")
         reproduccion.grid(row=2, column=0, columnspan=2, sticky="ew")
@@ -289,7 +293,7 @@ class AplicacionLoteria(tk.Tk):
         self.progreso = self._con_tema(tk.Canvas(reproduccion, height=6, highlightthickness=0), bg="superficie")
         self.progreso.grid(row=0, column=0, sticky="ew", padx=(0, 12))
         self.progreso.bind("<Configure>", lambda _e: self._dibujar_progreso(0) if not self.sesion_audio else None)
-        self.boton_detener = self._boton(reproduccion, "■  Detener", self.detener, state="disabled")
+        self.boton_detener = self._boton(reproduccion, "■  Detener", self.detener_todo, state="disabled")
         self.boton_detener.grid(row=0, column=1, rowspan=2)
         self.audio_estado = self._etiqueta(reproduccion, "Elige un idioma para escuchar", 9, fg="suave", anchor="w")
         self.audio_estado.grid(row=1, column=0, sticky="w", pady=(4, 0))
@@ -313,6 +317,15 @@ class AplicacionLoteria(tk.Tk):
     # ---------- datos ----------
     def cambiar_nivel(self) -> None:
         superior = self.nivel.get() == "superior"
+        juego = self.nivel.get() == "juego"
+        # Juego: sin lista ni edición, solo la tarjeta en grande.
+        if juego:
+            self.lateral.grid_remove()
+            self.titulo.configure(font=(FUENTE, 38, "bold"))
+            self._esperar_tarjeta_juego()
+        else:
+            self.lateral.grid()
+            self.titulo.configure(font=(FUENTE, 26, "bold"))
         if superior:
             self.edicion.grid(row=1, column=0, sticky="ew", pady=(16, 0))
         else:
@@ -330,6 +343,25 @@ class AplicacionLoteria(tk.Tk):
         self.tabla.column("nombre", width=96 if superior else 260)
         self.tabla.configure(displaycolumns="#all" if superior else ("nombre",))
         self.instruccion.configure(text=INSTRUCCIONES[self.nivel.get()])
+
+    def _esperar_tarjeta_juego(self) -> None:
+        """Pantalla inicial del modo Juego; conecta el lector si hace falta."""
+        self.detener_todo()
+        self.carta_actual = None
+        self.tabla.selection_remove(*self.tabla.selection())
+        self.etiqueta_carta.configure(text="MODO JUEGO")
+        self.titulo.configure(text="Acerca una tarjeta")
+        for tile in self.tiles.values():
+            tile["palabra"].configure(text="—")
+            self._habilitar(tile["boton"], False)
+        self._imagen_pil = None
+        self.imagen_tk = None
+        self.imagen.configure(image="", text="Esperando una tarjeta en el lector…")
+        if not self.lector:
+            if listar_puertos():
+                self.alternar_lector()
+            else:
+                self.estado.configure(text="⚠  Conecta el ESP32 por USB para jugar con tarjetas.")
 
     def importar(self) -> None:
         try:
@@ -390,7 +422,10 @@ class AplicacionLoteria(tk.Tk):
         carta = obtener_carta(self.conexion, self.carta_actual)
         fila = self.filas[self.carta_actual]
         uid = carta["uid_rfid"]
-        self.etiqueta_carta.configure(text=f"CARTA  ·  TARJETA {uid}" if uid else "CARTA")
+        if self.nivel.get() == "juego":
+            self.etiqueta_carta.configure(text=f"TARJETA {uid}" if uid else "MODO JUEGO")
+        else:
+            self.etiqueta_carta.configure(text=f"CARTA  ·  TARJETA {uid}" if uid else "CARTA")
         self.etiqueta_tarjeta.configure(text=f"Tarjeta RFID: {uid}" if uid else "Tarjeta RFID: sin asignar")
         self.titulo.configure(text=carta["nombre"].capitalize())
         self.instruccion.configure(text=INSTRUCCIONES[self.nivel.get()])
@@ -435,7 +470,22 @@ class AplicacionLoteria(tk.Tk):
         self.imagen.configure(image=self.imagen_tk, text="")
 
     # ---------- audio ----------
-    def reproducir(self, idioma: str) -> None:
+    def reproducir_secuencia(self, idiomas: list[str]) -> None:
+        """Reproduce varios audios uno tras otro; cada uno se detiene solo al terminar."""
+        self.cola_audio = list(idiomas)
+        self._siguiente_audio()
+
+    def _siguiente_audio(self) -> None:
+        if self.cola_audio:
+            self.reproducir(self.cola_audio.pop(0), desde_cola=True)
+
+    def detener_todo(self) -> None:
+        self.cola_audio = []
+        self.detener()
+
+    def reproducir(self, idioma: str, desde_cola: bool = False) -> None:
+        if not desde_cola:
+            self.cola_audio = []  # un clic manual interrumpe la secuencia
         if not self.carta_actual:
             return
         medio = obtener_medio(self.conexion, self.carta_actual, idioma)
@@ -445,12 +495,13 @@ class AplicacionLoteria(tk.Tk):
         carpeta.mkdir(exist_ok=True)
         archivo = carpeta / f"{uuid4().hex}{medio['extension']}"
         archivo.write_bytes(medio["contenido"])
-        self._iniciar_audio(archivo, IDIOMA_UI[idioma][0], temporal=True)
+        self._iniciar_audio(archivo, IDIOMA_UI[idioma][0], temporal=True, idioma=idioma)
 
-    def _iniciar_audio(self, archivo: Path, idioma: str, temporal: bool) -> None:
+    def _iniciar_audio(self, archivo: Path, etiqueta: str, temporal: bool, idioma: str | None = None) -> None:
         self.detener()
         self.archivo_audio = archivo
         self.audio_temporal = temporal
+        self._resaltar_idioma(idioma)
         try:
             # ffpyplayer utiliza el motor de audio dentro de este proceso.
             self.reproductor = MediaPlayer(str(self.archivo_audio), ff_opts={"vn": True, "loop": 0})
@@ -460,7 +511,7 @@ class AplicacionLoteria(tk.Tk):
             self.duracion_audio = 0.0
             sesion = self.sesion_audio
             self._habilitar(self.boton_detener, True)
-            self.audio_estado.configure(text=f"Reproduciendo · {idioma}")
+            self.audio_estado.configure(text=f"Reproduciendo · {etiqueta}")
             # La duración se consulta una vez que el motor termina de cargar
             # metadatos. Así se detiene de forma segura al finalizar el audio.
             self.after(180, lambda s=sesion: self._programar_fin(s, 0))
@@ -496,9 +547,26 @@ class AplicacionLoteria(tk.Tk):
         if porcentaje:
             self.progreso.create_rectangle(0, 0, ancho * porcentaje, 6, fill=self.tema["progreso"], outline="")
 
+    def _resaltar_idioma(self, idioma: str | None) -> None:
+        """Marca con el color del idioma la tarjeta que está sonando."""
+        self.idioma_sonando = idioma
+        for nombre, tile in self.tiles.items():
+            if nombre == idioma:
+                color = IDIOMA_UI[nombre][1]
+                tile["marco"].configure(highlightthickness=2, highlightbackground=color, highlightcolor=color)
+            else:
+                tile["marco"].configure(highlightthickness=1, highlightbackground=self.tema["borde"],
+                                        highlightcolor=self.tema["borde"])
+
     def _finalizar_audio(self, sesion: str | None) -> None:
-        if sesion == self.sesion_audio:
-            self.detener()
+        """El audio terminó: se libera el reproductor (se detiene solo) y sigue la secuencia si la hay."""
+        if sesion != self.sesion_audio:
+            return
+        self.detener()
+        if self.cola_audio:
+            self.audio_estado.configure(text=f"Sigue · {IDIOMA_UI[self.cola_audio[0]][0]}")
+            self.after(450, self._siguiente_audio)  # pequeña pausa entre idiomas
+        else:
             self.audio_estado.configure(text="Listo. Puedes escucharlo otra vez o elegir otro idioma.")
 
     def detener(self) -> None:
@@ -508,6 +576,7 @@ class AplicacionLoteria(tk.Tk):
             self.reproductor.close_player()
             self.reproductor = None
         self._habilitar(self.boton_detener, False)
+        self._resaltar_idioma(None)
         self.audio_estado.configure(text="Elige un idioma para escuchar")
         self._dibujar_progreso(0)
         if self.archivo_audio and self.audio_temporal:
@@ -711,17 +780,17 @@ class AplicacionLoteria(tk.Tk):
             "distinta": f"⚠  La tarjeta {uid} es de «{nombre}», pero tiene grabado «{grabada}». Se usa la base.",
             "ocupada": f"⚠  «{nombre}» ya tiene la tarjeta {carta['uid_rfid'] if carta else ''}. "
                        f"La tarjeta {uid} no se asoció; quita la anterior en Edición para cambiarla.",
-            "nueva": f"Tarjeta nueva {uid}: «{grabada}» no está en la base." if grabada
-                     else f"Tarjeta nueva {uid} sin palabra grabada. Asígnala en el modo Edición.",
+            "creada": f"✓  Tarjeta nueva {uid}: se creó la carta «{nombre}» con sus palabras. Falta su imagen y audio.",
+            "nueva": f"Tarjeta nueva {uid} sin palabra grabada: quedó registrada; asígnala en el modo Edición.",
         }
-        if estado == "asociada":
+        if estado in ("asociada", "creada"):
             self.recargar()
         if carta:
             self.mostrar_carta(carta["id"])
         self.estado.configure(text=mensajes[estado])
 
     def mostrar_carta(self, carta_id: int) -> None:
-        """Juego: selecciona la carta y reproduce su audio (mazahua primero)."""
+        """Muestra la carta leída. En modo Juego suenan todos sus idiomas; si no, solo el mazahua."""
         if self.busqueda.get():
             self.busqueda.set("")  # la carta podría estar oculta por el filtro
         iid = str(carta_id)
@@ -729,10 +798,16 @@ class AplicacionLoteria(tk.Tk):
         self.tabla.see(iid)
         self.seleccionar()
         fila = self.filas[carta_id]
-        for idioma, campo in (("mazahua", "tiene_mazahua"), ("español", "tiene_espanol"), ("inglés", "tiene_ingles")):
-            if fila[campo]:
-                self.reproducir(idioma)
-                break
+        campos = {"mazahua": "tiene_mazahua", "español": "tiene_espanol", "inglés": "tiene_ingles"}
+        disponibles = [i for i in ORDEN_JUEGO if fila[campos[i]]]
+        if self.nivel.get() == "juego":
+            self.etiqueta_carta.configure(text=f"TARJETA {fila['uid_rfid']}" if fila["uid_rfid"] else "MODO JUEGO")
+            self.instruccion.configure(text=INSTRUCCIONES["juego"])
+            self.reproducir_secuencia(disponibles)
+            if not disponibles:
+                self.audio_estado.configure(text="Esta carta aún no tiene audios.")
+        elif disponibles:
+            self.reproducir(disponibles[0])
 
     def cerrar(self) -> None:
         if self._id_lecturas:

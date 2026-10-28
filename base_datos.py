@@ -65,6 +65,18 @@ def crear_esquema(conexion: sqlite3.Connection) -> None:
         conexion.execute("ALTER TABLE carta ADD COLUMN uid_rfid TEXT")
     # Una tarjeta solo puede pertenecer a una carta (varias cartas pueden no tener tarjeta).
     conexion.execute("CREATE UNIQUE INDEX IF NOT EXISTS carta_uid_rfid ON carta(uid_rfid)")
+    # Historial: cada tarjeta que pasa por el lector queda guardada, aunque no esté ligada a ninguna carta.
+    conexion.execute(
+        """CREATE TABLE IF NOT EXISTS lectura (
+               id INTEGER PRIMARY KEY,
+               uid_rfid TEXT NOT NULL,
+               carta_id INTEGER REFERENCES carta(id) ON DELETE SET NULL,
+               estado TEXT NOT NULL,
+               palabra TEXT NOT NULL DEFAULT '',
+               leida_en TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
+           )"""
+    )
+    conexion.execute("CREATE INDEX IF NOT EXISTS lectura_uid ON lectura(uid_rfid)")
     actual = conexion.execute("SELECT sql FROM sqlite_master WHERE name = 'medio'").fetchone()
     if actual is None:
         conexion.execute(_SQL_MEDIO.format(nombre="medio"))
@@ -126,7 +138,7 @@ def importar_archivos(conexion: sqlite3.Connection) -> dict[str, int]:
                 ).fetchone()[0]
             _guardar_bytes(conexion, carta_id, tipo, archivo, manual=False)
             totales[tipo] += 1
-    conexion.execute("DELETE FROM carta WHERE id NOT IN (SELECT carta_id FROM medio)")
+    conexion.execute("DELETE FROM carta WHERE uid_rfid IS NULL AND id NOT IN (SELECT carta_id FROM medio)")
     conexion.commit()
     return totales
 
@@ -233,7 +245,22 @@ def carta_por_palabra(conexion: sqlite3.Connection, palabra: str) -> sqlite3.Row
     return None
 
 
+def registrar_lectura(conexion: sqlite3.Connection, uid: str, carta_id: int | None, estado: str, palabra: str) -> None:
+    conexion.execute(
+        "INSERT INTO lectura(uid_rfid, carta_id, estado, palabra) VALUES (?, ?, ?, ?)",
+        (normalizar_uid(uid), carta_id, estado, palabra),
+    )
+    conexion.commit()
+
+
 def emparejar_lectura(conexion: sqlite3.Connection, uid: str, palabras: list[str]) -> tuple[sqlite3.Row | None, str]:
+    """Empareja la tarjeta con la base y deja la lectura registrada en la tabla ``lectura``."""
+    carta, estado = _emparejar(conexion, uid, palabras)
+    registrar_lectura(conexion, uid, carta["id"] if carta else None, estado, next((p for p in palabras if p), ""))
+    return carta, estado
+
+
+def _emparejar(conexion: sqlite3.Connection, uid: str, palabras: list[str]) -> tuple[sqlite3.Row | None, str]:
     """Decide qué hacer con una tarjeta leída. ``palabras`` son los textos grabados en ella (ES, MZ, EN).
 
     Estados devueltos junto con la carta:
@@ -241,7 +268,8 @@ def emparejar_lectura(conexion: sqlite3.Connection, uid: str, palabras: list[str
       - ``"distinta"`` el UID pertenece a una carta, pero la tarjeta dice otra palabra (se usa la base).
       - ``"asociada"`` el UID era nuevo y la palabra existía sin tarjeta: se asoció automáticamente.
       - ``"ocupada"``  el UID es nuevo, pero la carta de esa palabra ya tiene otra tarjeta (no se cambia).
-      - ``"nueva"``    ni el UID ni la palabra están en la base (carta = None).
+      - ``"creada"``   ni el UID ni la palabra estaban: se creó la carta con los textos de la tarjeta.
+      - ``"nueva"``    UID desconocido y la tarjeta no trae palabra en español (carta = None).
     """
     uid = normalizar_uid(uid)
     por_palabra = next((c for c in (carta_por_palabra(conexion, p) for p in palabras if p) if c), None)
@@ -251,7 +279,15 @@ def emparejar_lectura(conexion: sqlite3.Connection, uid: str, palabras: list[str
             return por_uid, "distinta"
         return por_uid, "valida"
     if por_palabra is None:
-        return None, "nueva"
+        espanol, mazahua, ingles = (list(palabras) + ["", "", ""])[:3]
+        if not espanol:
+            return None, "nueva"
+        nombre = nombre_canonico(f"{espanol}.x")
+        cursor = conexion.execute(
+            "INSERT INTO carta(nombre, mazahua, ingles, uid_rfid) VALUES (?, ?, ?, ?)", (nombre, mazahua, ingles, uid)
+        )
+        conexion.commit()
+        return obtener_carta(conexion, cursor.lastrowid), "creada"
     if por_palabra["uid_rfid"]:
         return por_palabra, "ocupada"
     asignar_uid(conexion, por_palabra["id"], uid)

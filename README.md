@@ -34,6 +34,16 @@ Para escuchar un audio, la aplicación extrae temporalmente el BLOB para el moto
 
 Todo vive en **una sola base**, `loteria_mazahua.sqlite3`: cada carta puede tener la tarjeta física ligada en `carta.uid_rfid` (única: una tarjeta no puede pertenecer a dos cartas).
 
+### Modo Juego · Tarjetas
+Tercer modo de la barra superior. Oculta la lista y la edición y muestra solo la tarjeta en grande. Si el ESP32 está enchufado, conecta el lector solo.
+
+- Al pasar una tarjeta aparecen su imagen y sus palabras, y los audios suenan **solos uno tras otro: mazahua → español → inglés** (los que existan). El idioma que está sonando se resalta con su color.
+- Cada audio **se detiene solo** al terminar: el reproductor se libera y empieza el siguiente tras una pausa breve. **Detener** corta la secuencia. Los botones **Escuchar** o las teclas 1, 2 y 3 repiten un idioma.
+
+### El UID siempre queda en la base
+- **Historial:** cada tarjeta que pasa por el lector se guarda en la tabla `lectura` (UID, carta, resultado, palabra grabada y fecha), aunque no esté ligada a ninguna carta.
+- **Cartas nuevas:** si la tarjeta trae una palabra en español que no existe en la base, se **crea la carta** con sus palabras y su UID. Luego, en *Edición*, se le cargan imagen y audios. **Importar recursos** ya no borra las cartas que tienen tarjeta aunque todavía no tengan archivos.
+
 ### Emparejamiento automático
 Pulsa **Conectar lector** y pasa tarjetas. La app compara el UID y la palabra grabada en la tarjeta (bloques ES/EN/MZ) con la base:
 
@@ -43,7 +53,7 @@ Pulsa **Conectar lector** y pasa tarjetas. La app compara el UID y la palabra gr
 | El UID es nuevo y la palabra existe en una carta **sin tarjeta** | **Asocia el UID automáticamente** y muestra la carta. |
 | El UID es nuevo, pero esa carta ya tiene otra tarjeta | Avisa y no cambia nada. |
 | El UID es de una carta pero la tarjeta dice otra palabra | Avisa y usa lo que dice la base. |
-| Ni el UID ni la palabra existen | Avisa: asígnala a mano en *Edición* con **Asignar tarjeta**. |
+| Ni el UID ni la palabra existen | Crea la carta con las palabras de la tarjeta y su UID. Si la tarjeta no trae palabra, solo queda en el historial y se asigna a mano en *Edición*. |
 
 La palabra se compara sin tildes ni mayúsculas, con los alias del catálogo (`banana` → `plátano`) y también contra las palabras en mazahua e inglés.
 

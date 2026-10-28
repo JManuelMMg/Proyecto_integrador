@@ -5,7 +5,7 @@ from pathlib import Path
 import mimetypes
 import sqlite3
 
-from catalogo_loteria import nombre_canonico
+from catalogo_loteria import clave, nombre_canonico
 
 RAIZ = Path(__file__).resolve().parent
 RUTA_BD = RAIZ / "loteria_mazahua.sqlite3"
@@ -205,3 +205,41 @@ def asignar_uid(conexion: sqlite3.Connection, carta_id: int, uid: str | None) ->
             raise ValueError(f"La tarjeta {uid} ya está asignada a «{duena['nombre']}». Quítala de esa carta primero.")
     conexion.execute("UPDATE carta SET uid_rfid = ? WHERE id = ?", (uid, carta_id))
     conexion.commit()
+
+
+def carta_por_palabra(conexion: sqlite3.Connection, palabra: str) -> sqlite3.Row | None:
+    """Busca la carta cuya palabra (español, mazahua o inglés) coincide, sin importar tildes ni alias."""
+    objetivo = clave(nombre_canonico(f"{palabra}.x"))  # nombre_canonico espera un nombre de archivo
+    if not objetivo:
+        return None
+    cartas = conexion.execute("SELECT * FROM carta").fetchall()
+    for campo in ("nombre", "mazahua", "ingles"):  # el español tiene prioridad
+        for carta in cartas:
+            if carta[campo] and clave(carta[campo]) == objetivo:
+                return carta
+    return None
+
+
+def emparejar_lectura(conexion: sqlite3.Connection, uid: str, palabras: list[str]) -> tuple[sqlite3.Row | None, str]:
+    """Decide qué hacer con una tarjeta leída. ``palabras`` son los textos grabados en ella (ES, MZ, EN).
+
+    Estados devueltos junto con la carta:
+      - ``"valida"``   el UID ya está en la base y coincide con la palabra (o la tarjeta no trae palabra).
+      - ``"distinta"`` el UID pertenece a una carta, pero la tarjeta dice otra palabra (se usa la base).
+      - ``"asociada"`` el UID era nuevo y la palabra existía sin tarjeta: se asoció automáticamente.
+      - ``"ocupada"``  el UID es nuevo, pero la carta de esa palabra ya tiene otra tarjeta (no se cambia).
+      - ``"nueva"``    ni el UID ni la palabra están en la base (carta = None).
+    """
+    uid = normalizar_uid(uid)
+    por_palabra = next((c for c in (carta_por_palabra(conexion, p) for p in palabras if p) if c), None)
+    por_uid = carta_por_uid(conexion, uid)
+    if por_uid:
+        if por_palabra and por_palabra["id"] != por_uid["id"]:
+            return por_uid, "distinta"
+        return por_uid, "valida"
+    if por_palabra is None:
+        return None, "nueva"
+    if por_palabra["uid_rfid"]:
+        return por_palabra, "ocupada"
+    asignar_uid(conexion, por_palabra["id"], uid)
+    return obtener_carta(conexion, por_palabra["id"]), "asociada"

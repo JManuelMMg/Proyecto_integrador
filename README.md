@@ -34,6 +34,24 @@ Para escuchar un audio, la aplicación extrae temporalmente el BLOB para el moto
 
 Todo vive en **una sola base**, `loteria_mazahua.sqlite3`: cada carta puede tener la tarjeta física ligada en `carta.uid_rfid` (única: una tarjeta no puede pertenecer a dos cartas).
 
-- **Asignar una tarjeta:** en *Media superior · Edición*, selecciona la carta, pulsa **Asignar tarjeta** y pasa la tarjeta por el lector. Si esa tarjeta ya pertenece a otra carta, la app avisa y no la duplica. **Quitar** la desliga. Sin lector conectado, la app pide escribir el UID.
-- **Jugar:** pulsa **Conectar lector**. Al pasar una tarjeta, la app muestra su carta (imagen y palabras en los tres idiomas) y reproduce el audio en mazahua (o en español/inglés si no lo hay).
-- `lector_rfid.py` solo lee el ESP32 por el puerto serie (`CARD:UID|ES:..|EN:..|MZ:..`); toda la información sale de la base.
+### Emparejamiento automático
+Pulsa **Conectar lector** y pasa tarjetas. La app compara el UID y la palabra grabada en la tarjeta (bloques ES/EN/MZ) con la base:
+
+| Situación | Qué hace |
+|---|---|
+| El UID ya está ligado y la palabra coincide (o la tarjeta no trae palabra) | Muestra la carta y reproduce su audio. |
+| El UID es nuevo y la palabra existe en una carta **sin tarjeta** | **Asocia el UID automáticamente** y muestra la carta. |
+| El UID es nuevo, pero esa carta ya tiene otra tarjeta | Avisa y no cambia nada. |
+| El UID es de una carta pero la tarjeta dice otra palabra | Avisa y usa lo que dice la base. |
+| Ni el UID ni la palabra existen | Avisa: asígnala a mano en *Edición* con **Asignar tarjeta**. |
+
+La palabra se compara sin tildes ni mayúsculas, con los alias del catálogo (`banana` → `plátano`) y también contra las palabras en mazahua e inglés.
+
+### ESP32: RC522 + Micro SD (`loteria_mazahua_lector/`)
+- **Diagnóstico al arrancar:** lee el registro de versión del RC522 y reporta `ESTADO:RC522=OK` o `ERROR:RC522=SIN_RESPUESTA`. La app muestra estos avisos en la barra de estado.
+- **Robustez:** el bucle no bloquea; ignora rebotes de la misma tarjeta (2 s); siempre libera la tarjeta aunque se retire a medias; cada 5 s comprueba que el RC522 siga respondiendo y lo reinicia solo tras un micro-corte.
+- **Micro SD:** comparte el bus SPI con el RC522 (CS 5 para el RC522, CS 4 para la SD; ambos en alto al iniciar). Si el módulo SD bloquea el bus, activa `SD_BUS_SEPARADO` (HSPI). Por cada lectura informa qué archivos hay (`SD:IMG=1,ES=1,MZ=0,EN=0`) y la anota en `/loteria/lecturas.csv`.
+- **Comandos por Serial:** `PING`, `ESTADO`, `SD_INIT`, `SD_LS /loteria/img`, `SD_BUSCAR gato`.
+- **Preparar la SD desde la base:** `python exportar_sd.py E:\` copia imágenes y audios con la estructura `/loteria/img/gato.png`, `/loteria/audio/{es,mz,en}/gato.mp3`.
+
+Requiere las librerías **MFRC522** (miguelbalboa) y el core **ESP32** de Arduino; `SD` y `SPI` vienen con el core.

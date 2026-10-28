@@ -13,7 +13,7 @@ from uuid import uuid4
 from ffpyplayer.player import MediaPlayer
 from PIL import Image, ImageOps, ImageTk
 
-from base_datos import (EXTENSIONES, IDIOMAS, RUTA_BD, asignar_uid, cargar_medio, carta_por_uid, conectar,
+from base_datos import (EXTENSIONES, IDIOMAS, RUTA_BD, asignar_uid, cargar_medio, conectar, emparejar_lectura,
                         crear_esquema, guardar_textos, importar_archivos, obtener_carta, obtener_medio, resumen)
 from catalogo_loteria import clave
 from lector_rfid import LectorRFID, listar_puertos
@@ -569,7 +569,8 @@ class AplicacionLoteria(tk.Tk):
             messagebox.showinfo("Lector RFID", "No se detectó ningún puerto serie. Conecta el ESP32 e instala pyserial.")
             return False
         puerto = puertos[0]  # con varios puertos se usa el primero
-        self.lector = LectorRFID(puerto, self.lecturas.put, lambda msg: self.lecturas.put({"error": msg}))
+        self.lector = LectorRFID(puerto, self.lecturas.put, lambda msg: self.lecturas.put({"error": msg}),
+                                 lambda es_error, msg: self.lecturas.put({"estado": msg, "es_error": es_error}))
         self.lector.start()
         self.boton_rfid.configure(text="●  Lector conectado")
         self.estado.configure(text=f"Acerca una tarjeta al lector ({puerto})")
@@ -623,26 +624,46 @@ class AplicacionLoteria(tk.Tk):
                 if self.esperando_tarjeta:
                     self._fin_espera("")
                 self.estado.configure(text=lectura["error"])
+            elif "estado" in lectura:  # diagnóstico del ESP32 (RC522 / Micro SD)
+                self.estado.configure(text=("⚠  ESP32: " if lectura["es_error"] else "ESP32: ") + lectura["estado"])
             elif self.esperando_tarjeta and self.carta_actual:
                 self._fin_espera("")
                 self._vincular(lectura["uid"])
             else:
-                self.mostrar_tarjeta(lectura["uid"])
+                self.procesar_lectura(lectura)
         self._id_lecturas = self.after(100, self._revisar_lecturas)
 
-    def mostrar_tarjeta(self, uid: str) -> None:
-        """Juego: muestra la carta ligada a la tarjeta y reproduce su audio."""
-        carta = carta_por_uid(self.conexion, uid)
-        if carta is None:
-            self.estado.configure(text=f"Tarjeta {uid} sin asignar. Asígnala en el modo Edición.")
-            return
+    def procesar_lectura(self, lectura: dict) -> None:
+        """Empareja la tarjeta con la base (ver ``emparejar_lectura``) y la lleva al juego."""
+        uid = lectura["uid"]
+        palabras = [lectura["espanol"], lectura["mazahua"], lectura["ingles"]]
+        grabada = next((p for p in palabras if p), "")
+        carta, estado = emparejar_lectura(self.conexion, uid, palabras)
+        nombre = carta["nombre"] if carta else ""
+        mensajes = {
+            "valida": f"Tarjeta {uid} · «{nombre}»",
+            "asociada": f"✓  Tarjeta {uid} asociada automáticamente a «{nombre}».",
+            "distinta": f"⚠  La tarjeta {uid} es de «{nombre}», pero tiene grabado «{grabada}». Se usa la base.",
+            "ocupada": f"⚠  «{nombre}» ya tiene la tarjeta {carta['uid_rfid'] if carta else ''}. "
+                       f"La tarjeta {uid} no se asoció; quita la anterior en Edición para cambiarla.",
+            "nueva": f"Tarjeta nueva {uid}: «{grabada}» no está en la base." if grabada
+                     else f"Tarjeta nueva {uid} sin palabra grabada. Asígnala en el modo Edición.",
+        }
+        if estado == "asociada":
+            self.recargar()
+        if carta:
+            self.mostrar_carta(carta["id"])
+        self.estado.configure(text=mensajes[estado])
+
+    def mostrar_carta(self, carta_id: int) -> None:
+        """Juego: selecciona la carta y reproduce su audio (mazahua primero)."""
         if self.busqueda.get():
             self.busqueda.set("")  # la carta podría estar oculta por el filtro
-        iid = str(carta["id"])
+        iid = str(carta_id)
         self.tabla.selection_set(iid)
         self.tabla.see(iid)
         self.seleccionar()
-        fila = self.filas[carta["id"]]
+        fila = self.filas[carta_id]
         for idioma, campo in (("mazahua", "tiene_mazahua"), ("español", "tiene_espanol"), ("inglés", "tiene_ingles")):
             if fila[campo]:
                 self.reproducir(idioma)

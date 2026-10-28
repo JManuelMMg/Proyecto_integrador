@@ -2,7 +2,7 @@
 #include <MFRC522.h>
 
 // ===== Pines (ESP32) =====
-#define SS_PIN   5   // SDA
+#define SS_PIN   21  // SDA (no usar GPIO 5: es pin de arranque)
 #define RST_PIN  22
 #define SCK_PIN  18
 #define MISO_PIN 19

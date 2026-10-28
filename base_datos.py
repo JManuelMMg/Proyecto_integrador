@@ -207,6 +207,19 @@ def asignar_uid(conexion: sqlite3.Connection, carta_id: int, uid: str | None) ->
     conexion.commit()
 
 
+def reasignar_uid(conexion: sqlite3.Connection, carta_id: int, uid: str) -> str | None:
+    """Liga la tarjeta a la carta aunque perteneciera a otra (se acaba de regrabar físicamente).
+
+    Devuelve el nombre de la carta que la tenía antes, o None.
+    """
+    anterior = carta_por_uid(conexion, uid)
+    if anterior and anterior["id"] != carta_id:
+        conexion.execute("UPDATE carta SET uid_rfid = NULL WHERE id = ?", (anterior["id"],))
+    conexion.execute("UPDATE carta SET uid_rfid = NULL WHERE id = ?", (carta_id,))  # suelta su tarjeta previa
+    asignar_uid(conexion, carta_id, uid)
+    return anterior["nombre"] if anterior and anterior["id"] != carta_id else None
+
+
 def carta_por_palabra(conexion: sqlite3.Connection, palabra: str) -> sqlite3.Row | None:
     """Busca la carta cuya palabra (español, mazahua o inglés) coincide, sin importar tildes ni alias."""
     objetivo = clave(nombre_canonico(f"{palabra}.x"))  # nombre_canonico espera un nombre de archivo

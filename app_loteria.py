@@ -14,9 +14,10 @@ from ffpyplayer.player import MediaPlayer
 from PIL import Image, ImageOps, ImageTk
 
 from base_datos import (EXTENSIONES, IDIOMAS, RUTA_BD, asignar_uid, cargar_medio, conectar, emparejar_lectura,
-                        crear_esquema, guardar_textos, importar_archivos, obtener_carta, obtener_medio, resumen)
+                        crear_esquema, guardar_textos, importar_archivos, obtener_carta, obtener_medio,
+                        reasignar_uid, resumen)
 from catalogo_loteria import clave
-from lector_rfid import LectorRFID, listar_puertos
+from lector_rfid import LectorRFID, comando_grabar, listar_puertos, recortar_16
 
 FUENTE = "Segoe UI"
 TEMAS = {
@@ -60,6 +61,7 @@ class AplicacionLoteria(tk.Tk):
         self.lecturas: queue.Queue = queue.Queue()
         self.lector: LectorRFID | None = None
         self.esperando_tarjeta = False  # True: la próxima tarjeta leída se asigna a la carta actual
+        self.grabando_carta: int | None = None  # carta cuyos textos se están grabando en una tarjeta
         self.carta_actual: int | None = None
         self.filas: dict[int, dict] = {}
         self.imagen_tk = None
@@ -301,10 +303,12 @@ class AplicacionLoteria(tk.Tk):
         self.etiqueta_tarjeta = self._etiqueta(textos, "Tarjeta RFID: —", 9, fg="suave")
         self.etiqueta_tarjeta.pack(anchor="w")
         self._boton(self.edicion, "✓  Guardar palabras", self.guardar_textos, "acento").pack(side="right")
-        self._boton(self.edicion, "Cambiar imagen…", lambda: self.cargar("imagen")).pack(side="right", padx=8)
+        self._boton(self.edicion, "Imagen…", lambda: self.cargar("imagen")).pack(side="right", padx=8)
         self._boton(self.edicion, "Quitar", self.quitar_tarjeta).pack(side="right")
-        self.boton_asignar = self._boton(self.edicion, "◉  Asignar tarjeta", self.asignar_tarjeta)
+        self.boton_asignar = self._boton(self.edicion, "◉  Asignar", self.asignar_tarjeta)
         self.boton_asignar.pack(side="right", padx=(0, 8))
+        self.boton_grabar = self._boton(self.edicion, "✎  Grabar tarjeta", self.grabar_tarjeta)
+        self.boton_grabar.pack(side="right", padx=(0, 8))
 
     # ---------- datos ----------
     def cambiar_nivel(self) -> None:
@@ -612,8 +616,65 @@ class AplicacionLoteria(tk.Tk):
 
     def _fin_espera(self, mensaje: str) -> None:
         self.esperando_tarjeta = False
-        self.boton_asignar.configure(text="◉  Asignar tarjeta")
+        self.boton_asignar.configure(text="◉  Asignar")
         self.estado.configure(text=mensaje)
+
+    def grabar_tarjeta(self) -> None:
+        """Escribe en una tarjeta física las palabras guardadas de la carta y la liga a ella."""
+        if self.grabando_carta:
+            if self.lector:
+                self.lector.enviar("CANCELAR")
+            self._fin_grabacion("Grabación cancelada.")
+            return
+        if not self._requiere_carta():
+            return
+        if not (self.lector or (listar_puertos() and self.alternar_lector())):
+            messagebox.showinfo("Grabar tarjeta", "Conecta el lector RFID para grabar tarjetas.")
+            return
+        carta = obtener_carta(self.conexion, self.carta_actual)
+        if any(self.textos[i].get().strip() != (carta[c] or "") for i, c in zip(IDIOMAS, ("nombre", "mazahua", "ingles"))):
+            if not messagebox.askyesno("Grabar tarjeta", "Hay cambios sin guardar. Se grabará lo que está en la base.\n¿Continuar?"):
+                return
+        recortadas = [p for p in (carta["nombre"], carta["mazahua"], carta["ingles"]) if p and recortar_16(p) != p]
+        if recortadas:
+            self.estado.configure(text="Las palabras largas se recortan a 16 bytes: " + ", ".join(recortadas))
+        # El ESP32 acaba de reiniciarse si el lector se conectó ahora: se reintenta hasta que el puerto esté abierto.
+        self.grabando_carta = carta["id"]
+        self.boton_grabar.configure(text="✕  Cancelar")
+        self._enviar_grabacion(comando_grabar(carta["nombre"], carta["mazahua"], carta["ingles"]), 0)
+
+    def _enviar_grabacion(self, comando: str, intento: int) -> None:
+        if not self.grabando_carta or not self.lector:
+            return
+        if self.lector.enviar(comando):
+            self.estado.configure(text=f"Acerca la tarjeta al lector para grabar «{self.filas[self.grabando_carta]['nombre']}»…")
+        elif intento < 30:
+            self.after(100, lambda: self._enviar_grabacion(comando, intento + 1))
+        else:
+            self._fin_grabacion("⚠  No se pudo hablar con el ESP32.")
+
+    def _respuesta_grabacion(self, respuesta: dict) -> None:
+        if not self.grabando_carta or respuesta["grabacion"] == "esperando":
+            return
+        carta_id = self.grabando_carta
+        nombre = self.filas[carta_id]["nombre"]
+        if respuesta["grabacion"] == "ok":
+            anterior = reasignar_uid(self.conexion, carta_id, respuesta["uid"])
+            self.recargar()
+            if self.carta_actual == carta_id:
+                self.seleccionar()
+            extra = f" (antes era de «{anterior}»)" if anterior else ""
+            self._fin_grabacion(f"✓  Tarjeta {respuesta['uid']} grabada y asignada a «{nombre}»{extra}.")
+        elif respuesta["grabacion"] == "error":
+            self._fin_grabacion(f"⚠  No se grabó «{nombre}»: {respuesta['motivo']}.")
+        else:
+            self._fin_grabacion("Grabación cancelada.")
+
+    def _fin_grabacion(self, mensaje: str) -> None:
+        self.grabando_carta = None
+        self.boton_grabar.configure(text="✎  Grabar tarjeta")
+        if mensaje:
+            self.estado.configure(text=mensaje)
 
     def _revisar_lecturas(self) -> None:
         while not self.lecturas.empty():
@@ -623,7 +684,11 @@ class AplicacionLoteria(tk.Tk):
                 self.boton_rfid.configure(text="◉  Conectar lector")
                 if self.esperando_tarjeta:
                     self._fin_espera("")
+                if self.grabando_carta:
+                    self._fin_grabacion("")
                 self.estado.configure(text=lectura["error"])
+            elif "grabacion" in lectura:
+                self._respuesta_grabacion(lectura)
             elif "estado" in lectura:  # diagnóstico del ESP32 (RC522 / Micro SD)
                 self.estado.configure(text=("⚠  ESP32: " if lectura["es_error"] else "ESP32: ") + lectura["estado"])
             elif self.esperando_tarjeta and self.carta_actual:

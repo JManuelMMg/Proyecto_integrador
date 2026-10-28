@@ -4,6 +4,9 @@ El sketch ``loteria_mazahua_lector.ino`` imprime una línea por evento:
     CARD:<UID>|ES:<texto>|EN:<texto>|MZ:<texto>|SD:IMG=1,ES=1,MZ=0,EN=0
     ESTADO:RC522=OK|VERSION=0x92         (diagnóstico correcto)
     ERROR:RC522=SIN_RESPUESTA|...         (fallo de hardware)
+    GRABADO:<UID>|ES:..|EN:..|MZ:..       (respuesta al comando GRABAR)
+
+Para grabar una tarjeta se envía ``comando_grabar(...)`` con ``LectorRFID.enviar``.
 
 ``LectorRFID`` corre en un hilo y entrega cada tarjeta a ``callback`` y cada
 diagnóstico a ``on_estado``. No toca SQLite (las conexiones no se comparten
@@ -27,6 +30,44 @@ DIAGNOSTICOS = {
     "SD=NO_DETECTADA": "Micro SD no detectada (el lector RFID sigue funcionando)",
     "SD=ESCRITURA_FALLIDA": "Se perdió la Micro SD",
 }
+MOTIVOS_GRABAR = {
+    "TIEMPO_AGOTADO": "no se acercó ninguna tarjeta a tiempo",
+    "AUTENTICACION": "la tarjeta no es MIFARE Classic o tiene otra llave",
+    "ESCRITURA": "se retiró la tarjeta antes de terminar",
+    "VERIFICACION": "lo grabado no coincide al leerlo; vuelve a intentarlo",
+    "RC522": "el lector RFID no está listo",
+}
+
+
+def recortar_16(texto: str) -> str:
+    """Recorta a 16 bytes UTF-8 (un bloque de la tarjeta) sin partir letras con acento."""
+    texto = "".join(c for c in texto.strip() if c not in "|\r\n")
+    while len(texto.encode("utf-8")) > 16:
+        texto = texto[:-1]
+    return texto
+
+
+def comando_grabar(espanol: str, mazahua: str, ingles: str) -> str:
+    """Comando para que el ESP32 grabe los tres textos en la siguiente tarjeta."""
+    return f"GRABAR ES={recortar_16(espanol)}|EN={recortar_16(ingles)}|MZ={recortar_16(mazahua)}"
+
+
+def parsear_grabacion(linea: str) -> dict | None:
+    """Respuestas al comando GRABAR -> ``{"grabacion": esperando|ok|error|cancelado, ...}``."""
+    linea = linea.strip()
+    if linea == "GRABAR_ESPERANDO":
+        return {"grabacion": "esperando"}
+    if linea == "GRABAR_CANCELADO":
+        return {"grabacion": "cancelado"}
+    if linea.startswith("GRABADO:"):
+        lectura = parsear_linea("CARD:" + linea[len("GRABADO:"):])
+        return {"grabacion": "ok", **lectura} if lectura else None
+    if linea.startswith("ERROR:GRABAR="):
+        campos = dict(p.partition("=")[::2] for p in linea[len("ERROR:"):].split("|"))
+        codigo = campos.get("GRABAR", "")
+        return {"grabacion": "error", "uid": campos.get("UID", ""), "codigo": codigo,
+                "motivo": MOTIVOS_GRABAR.get(codigo, codigo)}
+    return None
 
 
 def parsear_linea(linea: str) -> dict | None:
@@ -82,27 +123,42 @@ class LectorRFID(threading.Thread):
         self.puerto, self.baudios = puerto, baudios
         self.callback, self.on_error, self.on_estado = callback, on_error, on_estado
         self._detener = threading.Event()
+        self._serial = None
+        self._escritura = threading.Lock()
+
+    def enviar(self, comando: str) -> bool:
+        """Envía un comando al ESP32 (p. ej. ``comando_grabar(...)``). False si el puerto no está abierto."""
+        with self._escritura:
+            if self._serial is None:
+                return False
+            self._serial.write((comando + "\n").encode("utf-8"))
+            return True
 
     def run(self) -> None:
         try:
             import serial  # pyserial; se importa aquí para que la app abra sin él
             with serial.Serial(self.puerto, self.baudios, timeout=0.5) as conexion:
+                self._serial = conexion
                 # Abrir el puerto reinicia el ESP32; si sus mensajes de arranque se pierden,
                 # se pide el diagnóstico de nuevo un momento después.
                 pedir_estado = time.monotonic() + 2.5
                 while not self._detener.is_set():
                     if pedir_estado and time.monotonic() >= pedir_estado:
-                        conexion.write(b"ESTADO\n")
+                        self.enviar("ESTADO")
                         pedir_estado = 0
                     linea = conexion.readline().decode("utf-8", errors="replace")
                     lectura = parsear_linea(linea)
                     if lectura:
                         self.callback(lectura)
+                    elif grabacion := parsear_grabacion(linea):
+                        self.callback(grabacion)
                     elif self.on_estado and (estado := parsear_estado(linea)):
                         self.on_estado(*estado)
         except Exception as error:  # puerto ocupado, cable desconectado, falta pyserial…
+            self._serial = None
             if self.on_error:
                 self.on_error(f"Lector RFID: {error}")
 
     def detener(self) -> None:
         self._detener.set()
+        self._serial = None

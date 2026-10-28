@@ -47,10 +47,17 @@ Pulsa **Conectar lector** y pasa tarjetas. La app compara el UID y la palabra gr
 
 La palabra se compara sin tildes ni mayúsculas, con los alias del catálogo (`banana` → `plátano`) y también contra las palabras en mazahua e inglés.
 
+### Grabar tarjetas
+El mismo sketch del lector (`loteria_mazahua_lector.ino`) también graba: ya no hace falta cambiar de sketch.
+
+- **Desde la app:** en *Media superior · Edición*, selecciona la carta y pulsa **Grabar tarjeta**. Acerca una tarjeta en los siguientes 15 s: el ESP32 escribe español, inglés y mazahua, lo verifica leyéndolo y la tarjeta queda ligada a la carta. Si esa tarjeta era de otra carta, se pasa a esta.
+- **Por lotes:** `python grabar_tarjetas.py` recorre las cartas sin tarjeta y pide una por una (Enter = grabar, `s` = saltar, `q` = salir). También `python grabar_tarjetas.py gato perro` o `--todas`.
+- Cada texto ocupa un bloque de 16 bytes; las palabras más largas se recortan (se avisa) sin partir letras con acento.
+
 ### ESP32: RC522 + Micro SD (`loteria_mazahua_lector/`)
 - **Diagnóstico al arrancar:** lee el registro de versión del RC522 y reporta `ESTADO:RC522=OK` o `ERROR:RC522=SIN_RESPUESTA`. La app muestra estos avisos en la barra de estado.
 - **Robustez:** el bucle no bloquea; ignora rebotes de la misma tarjeta (2 s); siempre libera la tarjeta aunque se retire a medias; cada 5 s comprueba que el RC522 siga respondiendo y lo reinicia solo tras un micro-corte.
-- **Micro SD:** comparte el bus SPI con el RC522 (CS 5 para el RC522, CS 4 para la SD; ambos en alto al iniciar). Si el módulo SD bloquea el bus, activa `SD_BUS_SEPARADO` (HSPI). Por cada lectura informa qué archivos hay (`SD:IMG=1,ES=1,MZ=0,EN=0`) y la anota en `/loteria/lecturas.csv`.
+- **Micro SD:** comparte el bus SPI con el RC522 (CS 21 para el RC522, CS 4 para la SD; ambos en alto al iniciar). Ningún pin usa la flash (GPIO 6-11) ni los pines de arranque (0, 2, 5, 12, 15); el sketch no compila si alguien los pone por error. Si el módulo SD bloquea el bus, activa `SD_BUS_SEPARADO` (HSPI). Por cada lectura informa qué archivos hay (`SD:IMG=1,ES=1,MZ=0,EN=0`) y la anota en `/loteria/lecturas.csv`.
 - **Comandos por Serial:** `PING`, `ESTADO`, `SD_INIT`, `SD_LS /loteria/img`, `SD_BUSCAR gato`.
 - **Preparar la SD desde la base:** `python exportar_sd.py E:\` copia imágenes y audios con la estructura `/loteria/img/gato.png`, `/loteria/audio/{es,mz,en}/gato.mp3`.
 

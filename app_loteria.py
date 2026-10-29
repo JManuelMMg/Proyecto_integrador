@@ -13,8 +13,8 @@ from uuid import uuid4
 from ffpyplayer.player import MediaPlayer
 from PIL import Image, ImageOps, ImageTk
 
-from base_datos import (EXTENSIONES, IDIOMAS, RUTA_BD, asignar_uid, cargar_medio, conectar, emparejar_lectura,
-                        crear_esquema, guardar_textos, importar_archivos, obtener_carta, obtener_medio,
+from base_datos import (EXTENSIONES, IDIOMAS, RUTA_BD, asignar_uid, cargar_medio, conectar, eliminar_carta, emparejar_lectura,
+                        crear_esquema, guardar_textos, importar_archivos, importar_audios_ingles, obtener_carta, obtener_medio,
                         reasignar_uid, resumen)
 from catalogo_loteria import clave
 from lector_rfid import LectorRFID, comando_grabar, listar_puertos, recortar_16
@@ -194,6 +194,7 @@ class AplicacionLoteria(tk.Tk):
         self._etiqueta(marca, "Aprende jugando  ·  Español  ·  Mazahua  ·  English", 10, fg="header_suave", bg="header").pack(anchor="w")
         self.boton_tema = self._boton(encabezado, "☾  Tema oscuro", self.alternar_tema, "header")
         self.boton_tema.pack(side="right", padx=(8, 0))
+        self._boton(encabezado, "🇺🇸  Importar audios EN", self.importar_audios_ingles, "header").pack(side="right", padx=(8, 0))
         self._boton(encabezado, "⟳  Importar recursos", self.importar, "header").pack(side="right", padx=(8, 0))
         self.boton_rfid = self._boton(encabezado, "◉  Conectar lector", self.alternar_lector, "header")
         self.boton_rfid.pack(side="right")
@@ -308,6 +309,7 @@ class AplicacionLoteria(tk.Tk):
         self.etiqueta_tarjeta.pack(anchor="w")
         self._boton(self.edicion, "✓  Guardar palabras", self.guardar_textos, "acento").pack(side="right")
         self._boton(self.edicion, "Imagen…", lambda: self.cargar("imagen")).pack(side="right", padx=8)
+        self._boton(self.edicion, "🗑  Eliminar carta", self.eliminar_carta, ("#E03E3E", "#C53030")).pack(side="right", padx=8)
         self._boton(self.edicion, "Quitar", self.quitar_tarjeta).pack(side="right")
         self.boton_asignar = self._boton(self.edicion, "◉  Asignar", self.asignar_tarjeta)
         self.boton_asignar.pack(side="right", padx=(0, 8))
@@ -370,6 +372,15 @@ class AplicacionLoteria(tk.Tk):
             self.estado.configure(text="Importado · " + " · ".join(f"{v} {k}" for k, v in totales.items()))
         except Exception as error:
             messagebox.showerror("No se pudo importar", str(error))
+
+    def importar_audios_ingles(self) -> None:
+        """Carga los MP3 de inglés sin modificar los demás recursos."""
+        try:
+            total = importar_audios_ingles(self.conexion)
+            self.recargar()
+            self.estado.configure(text=f"Importados o actualizados {total} audios en inglés.")
+        except Exception as error:
+            messagebox.showerror("No se pudieron importar los audios en inglés", str(error))
 
     def recargar(self) -> None:
         self.filas = {fila["id"]: dict(fila) for fila in resumen(self.conexion)}
@@ -608,6 +619,26 @@ class AplicacionLoteria(tk.Tk):
         self.recargar()
         self.seleccionar()
         self.estado.configure(text="Palabras guardadas.")
+
+    def eliminar_carta(self) -> None:
+        """Elimina la carta seleccionada y sus medios de SQLite tras confirmarlo."""
+        if not self._requiere_carta():
+            return
+        nombre = self.filas[self.carta_actual]["nombre"]
+        mensaje = (
+            f"¿Eliminar la carta «{nombre}» y todos sus recursos "
+            "(imagen, audios y UID)?\nEsta acción no se puede deshacer."
+        )
+        if not messagebox.askyesno("Eliminar carta", mensaje, parent=self):
+            return
+        try:
+            eliminar_carta(self.conexion, self.carta_actual)
+        except Exception as error:
+            messagebox.showerror("No se pudo eliminar", str(error), parent=self)
+            return
+        self.carta_actual = None
+        self.recargar()
+        self.estado.configure(text=f"Carta «{nombre}» eliminada.")
 
     def cargar(self, tipo: str) -> None:
         """Sustituye la imagen o el audio de un idioma de la carta seleccionada."""

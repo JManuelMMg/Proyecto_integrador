@@ -15,8 +15,9 @@ FUENTES = {
     "imagen": RAIZ / "images" / "imagenes_nitidas",
     "español": RAIZ / "audios_Español" / "Audios",
     "mazahua": RAIZ / "audios_mazahua" / "Audios Mazahua",
-    # Los audios en inglés se nombran con la palabra en español (gato.mp3).
-    "inglés": RAIZ / "audios_ingles",
+    # Los audios recibidos están dentro de esta subcarpeta. Sus nombres pueden
+    # contener ambos idiomas (por ejemplo ``gato_cat.mp3``).
+    "inglés": RAIZ / "audios_ingles" / "audios_ingles",
 }
 EXTENSIONES = {
     "imagen": {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp"},
@@ -107,6 +108,78 @@ def _guardar_bytes(conexion: sqlite3.Connection, carta_id: int, tipo: str, archi
     )
 
 
+# Mapeo de nombres de archivos en inglés a nombres canónicos en español
+MAPEO_INGLES = {
+    "Almohada — Pillow.mp3": "almohada",
+    "Cobija — Blanket.mp3": "cobija",
+    "Cuchara — Spoon.mp3": "cuchara",
+    "Cuchillo — Knife.mp3": "cuchillo",
+    "Espejo — Mirror.mp3": "espejo",
+    "Mesa — Table.mp3": "mesa",
+    "Puerta — Door.mp3": "puerta",
+    "Refrigerador — fridge.mp3": "refrigerador",
+    "Silla — Chair.mp3": "silla",
+    "Tenedor — Fork.mp3": "tenedor",
+    "Ventana — Window.mp3": "ventana",
+    "aguacate-avocado.mp3": "aguacate",
+    "banana.mp3": "plátano",
+    "blue.mp3": "azul",
+    "bosque-forest.mp3": "bosque",
+    "brother.mp3": "hermano",
+    "cama-bed.mp3": "cama",
+    "cempasuchil-marigold.mp3": "cempasúchil",
+    "chamarra-jacket.mp3": "chamarra",
+    "chapulin-grasshoper.mp3": "chapulín",
+    "chayote-squash.mp3": "chayote",
+    "chili peper.mp3": "chile",
+    "corazon-heart.mp3": "corazón",
+    "cuervo-raven.mp3": "cuervo",
+    "dad.mp3": "papá",
+    "escalera-ladder.mp3": "escalera",
+    "espinaca-spinach.mp3": "espinaca",
+    "flower.mp3": "flor",
+    "fresa-strawberry.mp3": "fresa",
+    "gallina-hen.mp3": "gallina",
+    "gallo-rooster.mp3": "gallo",
+    "gato_cat.mp3": "gato",
+    "guajolote-turkey.mp3": "guajolote",
+    "jitomate-tomato.mp3": "jitomate",
+    "lagartija-lizard.mp3": "lagartija",
+    "lapiz-pencil.mp3": "lápiz",
+    "lluvia-rain.mp3": "lluvia",
+    "mano-hand.mp3": "mano",
+    "mom.mp3": "mamá",
+    "moon.mp3": "luna",
+    "notebook.mp3": "cuaderno",
+    "ojo-eye.mp3": "ojo",
+    "orange.mp3": "naranja",
+    "paloma-pigeon.mp3": "paloma",
+    "pato-duck.mp3": "pato",
+    "perro-dog.mp3": "perro",
+    "pig.mp3": "cerdo",
+    "rana-frog.mp3": "rana",
+    "raton-mouse.mp3": "ratón",
+    "rio-river.mp3": "río",
+    "sol-sun.mp3": "sol",
+    "spider.mp3": "araña",
+    "star.mp3": "estrella",
+    "teacher.mp3": "maestro",
+    "temazcal.mp3": "temazcal",
+    "water.mp3": "agua",
+    "watermelon.mp3": "sandía",
+    "zorrillo-skunk.mp3": "zorrillo",
+}
+
+
+def _nombre_de_archivo(tipo: str, archivo: Path) -> str:
+    """Devuelve el nombre canónico de la carta para un archivo de origen."""
+    if tipo == "inglés":
+        # Los audios en inglés no siguen todos el mismo patrón de nombre.
+        # El mapeo conserva una asociación explícita y segura con la carta.
+        return MAPEO_INGLES.get(archivo.name, nombre_canonico(archivo.name))
+    return nombre_canonico(archivo.name)
+
+
 def importar_archivos(conexion: sqlite3.Connection) -> dict[str, int]:
     """Carga/actualiza todos los recursos locales como BLOBs en SQLite."""
     crear_esquema(conexion)
@@ -131,7 +204,7 @@ def importar_archivos(conexion: sqlite3.Connection) -> dict[str, int]:
             if previo:
                 carta_id = previo[0]
             else:
-                nombre = nombre_canonico(archivo.name)
+                nombre = _nombre_de_archivo(tipo, archivo)
                 conexion.execute("INSERT OR IGNORE INTO carta(nombre) VALUES (?)", (nombre,))
                 carta_id = conexion.execute(
                     "SELECT id FROM carta WHERE nombre = ? COLLATE NOCASE", (nombre,)
@@ -141,6 +214,35 @@ def importar_archivos(conexion: sqlite3.Connection) -> dict[str, int]:
     conexion.execute("DELETE FROM carta WHERE uid_rfid IS NULL AND id NOT IN (SELECT carta_id FROM medio)")
     conexion.commit()
     return totales
+
+
+def importar_audios_ingles(conexion: sqlite3.Connection) -> int:
+    """Importa o actualiza únicamente los audios en inglés disponibles."""
+    crear_esquema(conexion)
+    carpeta = FUENTES["inglés"]
+    if not carpeta.exists():
+        return 0
+
+    total = 0
+    for archivo in carpeta.iterdir():
+        if not archivo.is_file() or archivo.suffix.lower() not in EXTENSIONES["audio"]:
+            continue
+        previo = conexion.execute(
+            "SELECT carta_id FROM medio WHERE tipo = ? AND nombre_original = ?",
+            ("inglés", archivo.name),
+        ).fetchone()
+        if previo:
+            carta_id = previo["carta_id"]
+        else:
+            nombre = _nombre_de_archivo("inglés", archivo)
+            conexion.execute("INSERT OR IGNORE INTO carta(nombre) VALUES (?)", (nombre,))
+            carta_id = conexion.execute(
+                "SELECT id FROM carta WHERE nombre = ? COLLATE NOCASE", (nombre,)
+            ).fetchone()["id"]
+        _guardar_bytes(conexion, carta_id, "inglés", archivo, manual=False)
+        total += 1
+    conexion.commit()
+    return total
 
 
 def resumen(conexion: sqlite3.Connection) -> list[sqlite3.Row]:
@@ -243,6 +345,12 @@ def carta_por_palabra(conexion: sqlite3.Connection, palabra: str) -> sqlite3.Row
             if carta[campo] and clave(carta[campo]) == objetivo:
                 return carta
     return None
+
+
+def eliminar_carta(conexion: sqlite3.Connection, carta_id: int) -> None:
+    """Elimina una carta y todos sus medios asociados de la base de datos."""
+    conexion.execute("DELETE FROM carta WHERE id = ?", (carta_id,))
+    conexion.commit()
 
 
 def registrar_lectura(conexion: sqlite3.Connection, uid: str, carta_id: int | None, estado: str, palabra: str) -> None:

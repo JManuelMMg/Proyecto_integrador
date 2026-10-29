@@ -13,7 +13,7 @@ from uuid import uuid4
 from ffpyplayer.player import MediaPlayer
 from PIL import Image, ImageOps, ImageTk
 
-from base_datos import (EXTENSIONES, IDIOMAS, RUTA_BD, asignar_uid, cargar_medio, conectar, eliminar_carta, emparejar_lectura,
+from base_datos import (EXTENSIONES, IDIOMAS, RUTA_BD, asignar_uid, cargar_medio, conectar, crear_carta, eliminar_carta, emparejar_lectura,
                         crear_esquema, guardar_textos, importar_archivos, importar_audios_ingles, obtener_carta, obtener_medio,
                         reasignar_uid, resumen)
 from catalogo_loteria import clave
@@ -22,16 +22,18 @@ from lector_rfid import LectorRFID, comando_grabar, listar_puertos, recortar_16
 FUENTE = "Segoe UI"
 TEMAS = {
     "claro": {
-        "fondo": "#F3F5F9", "superficie": "#FFFFFF", "panel": "#F6F7FB", "texto": "#1E2533", "suave": "#667085",
-        "borde": "#E3E7EF", "lienzo": "#FAFBFD", "header": "#4B3B9A", "header_suave": "#D9D2FF",
-        "header_boton": "#5D4DB0", "header_activo": "#6E5FC4", "acento": "#4B3B9A", "acento_activo": "#3A2D80",
+        "fondo": "#EEF3FB", "superficie": "#FFFFFF", "panel": "#F6F8FC", "texto": "#16213A", "suave": "#71809A",
+        "borde": "#DCE4F0", "lienzo": "#F8FAFE", "header": "#162B52", "header_suave": "#B9CAE8",
+        "header_boton": "#254472", "header_activo": "#31598E", "acento": "#5661E9", "acento_activo": "#414CCB",
         "seleccion": "#E9E5FF", "seleccion_texto": "#2B1F6B", "progreso": "#12927A",
+        "es_fondo": "#FFF1E8", "mz_fondo": "#E6F8F1", "en_fondo": "#EAF2FF",
     },
     "oscuro": {
-        "fondo": "#0F1420", "superficie": "#171E2C", "panel": "#1D2536", "texto": "#EEF1F7", "suave": "#98A2B3",
-        "borde": "#2A3446", "lienzo": "#111827", "header": "#241B4D", "header_suave": "#BDB3F5",
-        "header_boton": "#33296A", "header_activo": "#44398A", "acento": "#7C6BF0", "acento_activo": "#6352E0",
+        "fondo": "#101827", "superficie": "#182235", "panel": "#202D43", "texto": "#F2F6FC", "suave": "#9EACC1",
+        "borde": "#2C3C56", "lienzo": "#121D2E", "header": "#0B1730", "header_suave": "#AFC4E6",
+        "header_boton": "#1D3A66", "header_activo": "#295184", "acento": "#8490FF", "acento_activo": "#A4ADFF",
         "seleccion": "#3B3277", "seleccion_texto": "#FFFFFF", "progreso": "#34C9A5",
+        "es_fondo": "#3A2A24", "mz_fondo": "#193C39", "en_fondo": "#1D3152",
     },
 }
 ORDEN_JUEGO = ("mazahua", "español", "inglés")  # orden en que suenan los audios en el modo Juego
@@ -101,18 +103,20 @@ class AplicacionLoteria(tk.Tk):
         self._tematicos.append((widget, tokens))
         return widget
 
-    def _tarjeta(self, padre, **opciones) -> tk.Frame:
+    def _tarjeta(self, padre, tema_bg: str = "superficie", **opciones) -> tk.Frame:
         """Superficie con borde fino, base de todos los paneles."""
         return self._con_tema(tk.Frame(padre, highlightthickness=1, bd=0, **opciones),
-                       bg="superficie", highlightbackground="borde", highlightcolor="borde")
+                       bg=tema_bg, highlightbackground="borde", highlightcolor="borde")
 
     def _etiqueta(self, padre, texto="", tamano=10, peso="normal", fg="texto", bg="superficie", **opciones) -> tk.Label:
         return self._con_tema(tk.Label(padre, text=texto, font=(FUENTE, tamano, peso), **opciones), bg=bg, fg=fg)
 
     def _boton(self, padre, texto, comando, estilo: object = "secundario", **opciones) -> tk.Button:
         """``estilo``: "secundario", "acento", "header" o una tupla (color, color_hover)."""
-        opciones = {"font": (FUENTE, 10, "bold"), "padx": 14, "pady": 8, **opciones}
-        boton = tk.Button(padre, text=texto, command=comando, relief="flat", bd=0, cursor="hand2", **opciones)
+        opciones = {"font": (FUENTE, 10, "bold"), "padx": 14, "pady": 8,
+                    "highlightthickness": 0, "takefocus": False, **opciones}
+        boton = tk.Button(padre, text=texto, command=comando, relief="flat", bd=0,
+                          cursor="hand2", **opciones)
         self._botones[boton] = estilo
         boton.bind("<Enter>", lambda _e: self._pintar_boton(boton, encima=True))
         boton.bind("<Leave>", lambda _e: self._pintar_boton(boton))
@@ -121,7 +125,7 @@ class AplicacionLoteria(tk.Tk):
     def _pintar_boton(self, boton: tk.Button, encima: bool = False) -> None:
         t, estilo = self.tema, self._botones[boton]
         if estilo == "secundario":
-            base, activo, fg = t["panel"], t["borde"], t["texto"]
+            base, activo, fg = t["panel"], t["seleccion"], t["texto"]
         elif estilo == "acento":
             base, activo, fg = t["acento"], t["acento_activo"], "#FFFFFF"
         elif estilo == "header":
@@ -152,20 +156,74 @@ class AplicacionLoteria(tk.Tk):
         estilo = ttk.Style(self)
         estilo.theme_use("clam")
         estilo.configure("Treeview", background=t["superficie"], fieldbackground=t["superficie"], foreground=t["texto"],
-                         rowheight=34, font=(FUENTE, 11), borderwidth=0, relief="flat")
+                         rowheight=38, font=(FUENTE, 10), borderwidth=0, relief="flat")
         estilo.configure("Treeview.Heading", background=t["panel"], foreground=t["suave"], font=(FUENTE, 9, "bold"),
-                         relief="flat", borderwidth=0, padding=(8, 6))
+                         relief="flat", borderwidth=0, padding=(10, 8))
         estilo.map("Treeview", background=[("selected", t["seleccion"])], foreground=[("selected", t["seleccion_texto"])])
         estilo.map("Treeview.Heading", background=[("active", t["borde"])])
         estilo.layout("Treeview", [("Treeview.treearea", {"sticky": "nswe"})])  # sin marco 3D
         estilo.configure("TEntry", fieldbackground=t["panel"], foreground=t["texto"], insertcolor=t["texto"],
-                         bordercolor=t["borde"], lightcolor=t["borde"], darkcolor=t["borde"], padding=(8, 6))
+                         bordercolor=t["borde"], lightcolor=t["borde"], darkcolor=t["borde"], padding=(10, 8))
         estilo.map("TEntry", bordercolor=[("focus", t["acento"])], lightcolor=[("focus", t["acento"])])
         estilo.configure("Vertical.TScrollbar", troughcolor=t["superficie"], background=t["borde"], bordercolor=t["superficie"],
                          arrowcolor=t["suave"], lightcolor=t["borde"], darkcolor=t["borde"])
         self.tabla.tag_configure("par", background=t["panel"])
+        if hasattr(self, "lienzo_cabecera"):
+            self._pintar_cabecera()
+        if hasattr(self, "ambiente_imagen"):
+            self._dibujar_ambiente_imagen()
         self._dibujar_estadisticas()
         self._dibujar_progreso(0)
+
+    @staticmethod
+    def _mezclar_color(inicio: str, final: str, proporcion: float) -> str:
+        """Mezcla dos colores hexadecimales para los degradados dibujados en Tk."""
+        proporcion = max(0.0, min(1.0, proporcion))
+        a = tuple(int(inicio[i:i + 2], 16) for i in (1, 3, 5))
+        b = tuple(int(final[i:i + 2], 16) for i in (1, 3, 5))
+        return "#%02x%02x%02x" % tuple(round(x + (y - x) * proporcion) for x, y in zip(a, b))
+
+    def _pintar_cabecera(self, _evento=None) -> None:
+        """Renderiza un degradado suave y brillos difuminados detrás de la marca."""
+        lienzo = self.lienzo_cabecera
+        ancho, alto = max(1, lienzo.winfo_width()), max(1, lienzo.winfo_height())
+        oscuro = self.modo_oscuro
+        inicio, final = (("#101D3A", "#4E54C8") if not oscuro else ("#081226", "#202E68"))
+        lienzo.delete("fondo")
+        for x in range(ancho):
+            color = self._mezclar_color(inicio, final, x / max(1, ancho - 1))
+            lienzo.create_line(x, 0, x, alto, fill=color, tags="fondo")
+        # Capas con tramado: simulan una luz suave sin depender de imágenes externas.
+        brillo_a = "#7BCBFF" if not oscuro else "#5874ED"
+        brillo_b = "#C7A4FF" if not oscuro else "#6D47BD"
+        lienzo.create_oval(ancho * .58, -alto * .8, ancho * 1.08, alto * 1.5,
+                           fill=brillo_a, outline="", stipple="gray25", tags="fondo brillo_a")
+        lienzo.create_oval(ancho * .77, -alto * .55, ancho * 1.15, alto * 1.2,
+                           fill=brillo_b, outline="", stipple="gray25", tags="fondo brillo_b")
+        lienzo.tag_lower("fondo")
+        self._acomodar_cabecera()
+
+    def _acomodar_cabecera(self) -> None:
+        if not hasattr(self, "lienzo_cabecera"):
+            return
+        lienzo = self.lienzo_cabecera
+        ancho, alto = max(1, lienzo.winfo_width()), max(1, lienzo.winfo_height())
+        lienzo.coords(self.ventana_marca, 30, alto / 2)
+        lienzo.coords(self.ventana_acciones, ancho - 30, alto / 2)
+
+    def _animar_cabecera(self) -> None:
+        """Anima despacio los brillos para que el fondo se sienta vivo, no distractor."""
+        if not self.winfo_exists() or not hasattr(self, "lienzo_cabecera"):
+            return
+        lienzo = self.lienzo_cabecera
+        ancho, alto = max(1, lienzo.winfo_width()), max(1, lienzo.winfo_height())
+        self._fase_brillo = (self._fase_brillo + 1) % 240
+        desplazamiento = (self._fase_brillo - 120) * ancho / 2400
+        lienzo.coords("brillo_a", ancho * .58 + desplazamiento, -alto * .8,
+                      ancho * 1.08 + desplazamiento, alto * 1.5)
+        lienzo.coords("brillo_b", ancho * .77 - desplazamiento, -alto * .55,
+                      ancho * 1.15 - desplazamiento, alto * 1.2)
+        self.after(70, self._animar_cabecera)
 
     # ---------- construcción de la interfaz ----------
     def _crear_interfaz(self) -> None:
@@ -173,7 +231,7 @@ class AplicacionLoteria(tk.Tk):
         self.rowconfigure(2, weight=1)
         self._crear_encabezado()
         self._crear_barra()
-        cuerpo = self._con_tema(tk.Frame(self, padx=20, pady=16), bg="fondo")
+        cuerpo = self._con_tema(tk.Frame(self, padx=26, pady=22), bg="fondo")
         cuerpo.grid(row=2, column=0, sticky="nsew")
         cuerpo.columnconfigure(1, weight=1)
         cuerpo.rowconfigure(0, weight=1)
@@ -186,46 +244,58 @@ class AplicacionLoteria(tk.Tk):
         self._crear_edicion(contenido)
 
     def _crear_encabezado(self) -> None:
-        encabezado = self._con_tema(tk.Frame(self, padx=24, pady=14), bg="header")
-        encabezado.grid(row=0, column=0, sticky="ew")
-        marca = self._con_tema(tk.Frame(encabezado), bg="header")
-        marca.pack(side="left")
-        self._etiqueta(marca, "Lotería Mazahua", 20, "bold", fg="#FFFFFF", bg="header").pack(anchor="w")
-        self._etiqueta(marca, "Aprende jugando  ·  Español  ·  Mazahua  ·  English", 10, fg="header_suave", bg="header").pack(anchor="w")
-        self.boton_tema = self._boton(encabezado, "☾  Tema oscuro", self.alternar_tema, "header")
-        self.boton_tema.pack(side="right", padx=(8, 0))
-        self._boton(encabezado, "🇺🇸  Importar audios EN", self.importar_audios_ingles, "header").pack(side="right", padx=(8, 0))
-        self._boton(encabezado, "⟳  Importar recursos", self.importar, "header").pack(side="right", padx=(8, 0))
-        self.boton_rfid = self._boton(encabezado, "◉  Conectar lector", self.alternar_lector, "header")
-        self.boton_rfid.pack(side="right")
+        self._fase_brillo = 0
+        self.lienzo_cabecera = tk.Canvas(self, height=130, highlightthickness=0, bd=0)
+        self.lienzo_cabecera.grid(row=0, column=0, sticky="ew")
+        self.lienzo_cabecera.bind("<Configure>", self._pintar_cabecera)
+
+        marca = self._con_tema(tk.Frame(self.lienzo_cabecera), bg="header")
+        self._etiqueta(marca, "✦", 19, "bold", fg="#82D9FF", bg="header").pack(side="left", padx=(0, 12))
+        textos_marca = self._con_tema(tk.Frame(marca), bg="header")
+        textos_marca.pack(side="left")
+        self._etiqueta(textos_marca, "Lotería Mazahua", 21, "bold", fg="#FFFFFF", bg="header").pack(anchor="w")
+        self._etiqueta(textos_marca, "Explora palabras · escucha · aprende", 10, fg="header_suave", bg="header").pack(anchor="w", pady=(2, 0))
+        acciones = self._con_tema(tk.Frame(self.lienzo_cabecera), bg="header")
+        self.boton_rfid = self._boton(acciones, "◉  Conectar lector", self.alternar_lector, "header")
+        self.boton_rfid.pack(side="left", padx=(0, 8))
+        self._boton(acciones, "⟳  Importar recursos", self.importar, "header").pack(side="left", padx=(0, 8))
+        self._boton(acciones, "🇺🇸  Audios EN", self.importar_audios_ingles, "header").pack(side="left", padx=(0, 8))
+        self.boton_tema = self._boton(acciones, "☾", self.alternar_tema, "header", padx=12)
+        self.boton_tema.pack(side="left")
+        self.ventana_marca = self.lienzo_cabecera.create_window(30, 65, window=marca, anchor="w")
+        self.ventana_acciones = self.lienzo_cabecera.create_window(1, 65, window=acciones, anchor="e")
+        self._pintar_cabecera()
+        self.after(70, self._animar_cabecera)
 
     def _crear_barra(self) -> None:
-        barra = self._con_tema(tk.Frame(self, padx=24, pady=10), bg="superficie")
+        barra = self._con_tema(tk.Frame(self, padx=28, pady=11), bg="superficie")
         barra.grid(row=1, column=0, sticky="ew")
         self._etiqueta(barra, "Modo", 10, "bold", fg="suave").pack(side="left", padx=(0, 10))
         for valor, texto in (("basica", "Primaria"), ("superior", "Media superior · Edición"), ("juego", "▶  Juego · Tarjetas")):
             radio = tk.Radiobutton(barra, text=texto, variable=self.nivel, value=valor, command=self.cambiar_nivel,
                                    indicatoron=False, relief="flat", bd=0, offrelief="flat", cursor="hand2",
-                                   font=(FUENTE, 10, "bold"), padx=14, pady=6)
+                                   font=(FUENTE, 10, "bold"), padx=15, pady=7)
             self._con_tema(radio, bg="panel", fg="texto", selectcolor="seleccion", activebackground="borde", activeforeground="texto")
             radio.pack(side="left", padx=(0, 4))
         self.estado = self._etiqueta(barra, f"Base de datos: {RUTA_BD.name}", 10, fg="suave")
         self.estado.pack(side="right")
 
     def _crear_lateral(self, padre) -> None:
-        lateral = self.lateral = self._tarjeta(padre, width=340, padx=14, pady=14)
-        lateral.grid(row=0, column=0, sticky="ns", padx=(0, 16))
+        lateral = self.lateral = self._tarjeta(padre, width=350, padx=16, pady=17)
+        lateral.grid(row=0, column=0, sticky="ns", padx=(0, 20))
         lateral.pack_propagate(False)
         cabecera = self._con_tema(tk.Frame(lateral), bg="superficie")
         cabecera.pack(fill="x")
-        self._etiqueta(cabecera, "Cartas", 14, "bold").pack(side="left")
+        self._etiqueta(cabecera, "CATÁLOGO", 9, "bold", fg="acento").pack(anchor="w")
+        self._etiqueta(cabecera, "Cartas", 16, "bold").pack(side="left", pady=(3, 0))
         self.contador = self._etiqueta(cabecera, "", 10, fg="suave")
         self.contador.pack(side="right")
+        self._boton(lateral, "+  Nueva carta", self.nueva_carta, "acento", pady=9).pack(fill="x", pady=(14, 0))
         ttk.Entry(lateral, textvariable=self.busqueda, font=(FUENTE, 11)).pack(fill="x", pady=(10, 4))
         self._etiqueta(lateral, "Buscar en español, mazahua o inglés", 8, fg="suave").pack(anchor="w")
         self.busqueda.trace_add("write", lambda *_: self._llenar_tabla())
-        self.estadisticas = self._con_tema(tk.Canvas(lateral, height=66, highlightthickness=0), bg="superficie")
-        self.estadisticas.pack(fill="x", pady=(10, 8))
+        self.estadisticas = self._con_tema(tk.Canvas(lateral, height=72, highlightthickness=0), bg="superficie")
+        self.estadisticas.pack(fill="x", pady=(14, 10))
         self.estadisticas.bind("<Configure>", lambda _e: self._dibujar_estadisticas())
         lista = self._con_tema(tk.Frame(lateral), bg="superficie")
         lista.pack(fill="both", expand=True)
@@ -242,49 +312,64 @@ class AplicacionLoteria(tk.Tk):
         self.tabla.bind("<<TreeviewSelect>>", self.seleccionar)
 
     def _crear_visor(self, padre) -> None:
-        tarjeta = self._tarjeta(padre, padx=24, pady=20)
+        tarjeta = self._tarjeta(padre, padx=28, pady=25)
         tarjeta.grid(row=0, column=0, sticky="nsew")
-        # Distribución: imagen grande a la izquierda, los tres idiomas apilados a la derecha.
-        tarjeta.columnconfigure(0, weight=1)
-        tarjeta.columnconfigure(1, minsize=300)
+        # La edición necesita más ancho que la vista previa; así los tres idiomas
+        # quedan siempre visibles sin que la imagen monopolice la pantalla.
+        tarjeta.columnconfigure(0, weight=4, minsize=230)
+        tarjeta.columnconfigure(1, weight=6, minsize=300)
         tarjeta.rowconfigure(1, weight=1)
         cabecera = self._con_tema(tk.Frame(tarjeta), bg="superficie")
         cabecera.grid(row=0, column=0, columnspan=2, sticky="ew")
         self.etiqueta_carta = self._etiqueta(cabecera, "CARTA", 9, "bold", fg="acento")
         self.etiqueta_carta.pack(anchor="w")
-        self.titulo = self._etiqueta(cabecera, "Selecciona una carta", 26, "bold", anchor="w")
-        self.titulo.pack(fill="x")
+        self.titulo = self._etiqueta(cabecera, "Selecciona una carta", 25, "bold", anchor="w")
+        self.titulo.pack(fill="x", pady=(3, 0))
         self.instruccion = self._etiqueta(cabecera, INSTRUCCIONES["basica"], 10, fg="suave", anchor="w")
         self.instruccion.pack(fill="x")
 
         # La imagen se coloca con place() para que nunca agrande el marco: se adapta a él.
         self.marco_imagen = self._con_tema(tk.Frame(tarjeta, highlightthickness=1, bd=0), bg="lienzo",
                                     highlightbackground="borde", highlightcolor="borde")
-        self.marco_imagen.grid(row=1, column=0, sticky="nsew", pady=16, padx=(0, 16))
+        self.marco_imagen.grid(row=1, column=0, sticky="nsew", pady=14, padx=(0, 18))
+        self._fase_ambiente = 0
+        self.ambiente_imagen = self._con_tema(
+            tk.Canvas(self.marco_imagen, highlightthickness=0, bd=0), bg="lienzo"
+        )
+        self.ambiente_imagen.place(relx=0, rely=0, relwidth=1, relheight=1)
+        self.ambiente_imagen.bind("<Configure>", lambda _e: self._dibujar_ambiente_imagen())
+        self._etiqueta(self.marco_imagen, "VISTA PREVIA", 8, "bold", fg="suave", bg="lienzo").place(x=14, y=12)
         self.imagen = self._etiqueta(self.marco_imagen, "Elige una carta de la lista", 13, fg="suave", bg="lienzo")
         self.imagen.place(relx=0.5, rely=0.5, anchor="center")
-        self.marco_imagen.bind("<Configure>", lambda _e: self._programar_render())
+        self.marco_imagen.bind("<Configure>", self._redimensionar_previa)
+        self.after(90, self._animar_ambiente_imagen)
 
         idiomas = self._con_tema(tk.Frame(tarjeta), bg="superficie")
-        idiomas.grid(row=1, column=1, sticky="nsew", pady=16)
-        # Cada idioma: palabra (o campo editable en modo edición) + escuchar (+ cargar audio).
+        idiomas.grid(row=1, column=1, sticky="nsew", pady=14)
+        idiomas.columnconfigure(0, weight=1)
+        # Tres filas compactas: en Edición los tres campos (incluido inglés)
+        # caben al mismo tiempo, incluso en una pantalla pequeña.
         self.tiles: dict[str, dict[str, tk.Widget]] = {}
-        for idioma in IDIOMAS:
+        for indice, idioma in enumerate(IDIOMAS):
+            idiomas.rowconfigure(indice, weight=1, minsize=76)
             nombre, color, hover, tecla = IDIOMA_UI[idioma]
-            tile = self._tarjeta(idiomas)
-            tile.pack(fill="x", pady=(0, 10))
-            tk.Frame(tile, bg=color, width=4).pack(side="left", fill="y")
-            acciones = self._con_tema(tk.Frame(tile, pady=10), bg="superficie")
-            acciones.pack(side="right", padx=12)
-            boton = self._boton(acciones, "▶  Escuchar", lambda i=idioma: self.reproducir(i), (color, hover), state="disabled")
+            tono = {"español": "es_fondo", "mazahua": "mz_fondo", "inglés": "en_fondo"}[idioma]
+            tile = self._tarjeta(idiomas, tema_bg=tono)
+            tile.grid(row=indice, column=0, sticky="nsew", pady=(0, 7 if indice < len(IDIOMAS) - 1 else 0))
+            tile.bind("<Enter>", lambda _e, t=tile: self._resaltar_tile(t, True))
+            tile.bind("<Leave>", lambda _e, t=tile: self._resaltar_tile(t, False))
+            tk.Frame(tile, bg=color, width=5).pack(side="left", fill="y")
+            acciones = self._con_tema(tk.Frame(tile, pady=6), bg=tono)
+            acciones.pack(side="right", padx=8)
+            boton = self._boton(acciones, "▶", lambda i=idioma: self.reproducir(i), (color, hover), state="disabled", padx=10, pady=6)
             boton.pack(side="left")
-            cargar = self._boton(acciones, "Cargar audio…", lambda i=idioma: self.cargar(i), font=(FUENTE, 9, "bold"), padx=10)
-            texto = self._con_tema(tk.Frame(tile, padx=14, pady=10), bg="superficie")
+            cargar = self._boton(acciones, "Audio…", lambda i=idioma: self.cargar(i), font=(FUENTE, 9, "bold"), padx=8, pady=6)
+            texto = self._con_tema(tk.Frame(tile, padx=12, pady=7), bg=tono)
             texto.pack(side="left", fill="both", expand=True)
-            self._etiqueta(texto, f"{nombre.upper()}  ·  tecla {tecla}", 8, "bold", fg=color, anchor="w").pack(fill="x")
-            palabra = self._etiqueta(texto, "—", 16, "bold", anchor="w", wraplength=170, justify="left")
+            self._etiqueta(texto, f"{nombre.upper()}  ·  tecla {tecla}", 8, "bold", fg=color, bg=tono, anchor="w").pack(fill="x")
+            palabra = self._etiqueta(texto, "—", 15, "bold", bg=tono, anchor="w", wraplength=180, justify="left")
             palabra.pack(fill="x")
-            entrada = ttk.Entry(texto, textvariable=self.textos[idioma], font=(FUENTE, 12), width=12)
+            entrada = ttk.Entry(texto, textvariable=self.textos[idioma], font=(FUENTE, 11), width=12)
             entrada.bind("<Return>", lambda _e: self.guardar_textos())
             self.tiles[idioma] = {"palabra": palabra, "entrada": entrada, "boton": boton, "cargar": cargar, "marco": tile}
 
@@ -301,20 +386,31 @@ class AplicacionLoteria(tk.Tk):
 
     def _crear_edicion(self, padre) -> None:
         # Las palabras y los audios se editan en cada idioma; aquí quedan las acciones generales.
-        self.edicion = self._tarjeta(padre, padx=20, pady=12)
+        self.edicion = self._tarjeta(padre, padx=18, pady=12)
         textos = self._con_tema(tk.Frame(self.edicion), bg="superficie")
         textos.pack(side="left")
-        self._etiqueta(textos, "Editar carta", 12, "bold").pack(anchor="w")
+        self._etiqueta(textos, "EDICIÓN DE CARTA", 9, "bold", fg="acento").pack(anchor="w")
+        self._etiqueta(textos, "Contenido y tarjeta", 12, "bold").pack(anchor="w", pady=(2, 0))
         self.etiqueta_tarjeta = self._etiqueta(textos, "Tarjeta RFID: —", 9, fg="suave")
         self.etiqueta_tarjeta.pack(anchor="w")
-        self._boton(self.edicion, "✓  Guardar palabras", self.guardar_textos, "acento").pack(side="right")
-        self._boton(self.edicion, "Imagen…", lambda: self.cargar("imagen")).pack(side="right", padx=8)
-        self._boton(self.edicion, "🗑  Eliminar carta", self.eliminar_carta, ("#E03E3E", "#C53030")).pack(side="right", padx=8)
-        self._boton(self.edicion, "Quitar", self.quitar_tarjeta).pack(side="right")
-        self.boton_asignar = self._boton(self.edicion, "◉  Asignar", self.asignar_tarjeta)
-        self.boton_asignar.pack(side="right", padx=(0, 8))
-        self.boton_grabar = self._boton(self.edicion, "✎  Grabar tarjeta", self.grabar_tarjeta)
-        self.boton_grabar.pack(side="right", padx=(0, 8))
+        acciones = self._con_tema(tk.Frame(self.edicion), bg="superficie")
+        acciones.pack(side="right")
+        grupo_rfid = self._con_tema(tk.Frame(acciones, padx=10), bg="panel")
+        grupo_rfid.pack(side="left", padx=(0, 8))
+        self._etiqueta(grupo_rfid, "TARJETA RFID", 8, "bold", fg="suave", bg="panel").pack(anchor="w", pady=(5, 0))
+        fila_rfid = self._con_tema(tk.Frame(grupo_rfid), bg="panel")
+        fila_rfid.pack(pady=(2, 6))
+        self.boton_grabar = self._boton(fila_rfid, "✎ Grabar", self.grabar_tarjeta, pady=5, padx=9)
+        self.boton_grabar.pack(side="left")
+        self.boton_asignar = self._boton(fila_rfid, "Asignar", self.asignar_tarjeta, pady=5, padx=9)
+        self.boton_asignar.pack(side="left", padx=(5, 0))
+        self._boton(fila_rfid, "Quitar", self.quitar_tarjeta, pady=5, padx=9).pack(side="left", padx=(5, 0))
+        grupo_archivos = self._con_tema(tk.Frame(acciones, padx=10), bg="panel")
+        grupo_archivos.pack(side="left", padx=(0, 8))
+        self._etiqueta(grupo_archivos, "RECURSOS", 8, "bold", fg="suave", bg="panel").pack(anchor="w", pady=(5, 0))
+        self._boton(grupo_archivos, "▣ Imagen", lambda: self.cargar("imagen"), pady=5, padx=10).pack(pady=(2, 6))
+        self._boton(acciones, "✓  Guardar", self.guardar_textos, "acento", pady=9).pack(side="left", padx=(0, 8))
+        self._boton(acciones, "🗑", self.eliminar_carta, ("#E03E3E", "#C53030"), pady=9, padx=11).pack(side="left")
 
     # ---------- datos ----------
     def cambiar_nivel(self) -> None:
@@ -381,6 +477,27 @@ class AplicacionLoteria(tk.Tk):
             self.estado.configure(text=f"Importados o actualizados {total} audios en inglés.")
         except Exception as error:
             messagebox.showerror("No se pudieron importar los audios en inglés", str(error))
+
+    def nueva_carta(self) -> None:
+        """Da de alta una carta vacía para completarla en el modo Edición."""
+        nombre = simpledialog.askstring(
+            "Nueva carta", "Palabra en español:", parent=self
+        )
+        if nombre is None:
+            return
+        try:
+            carta_id = crear_carta(self.conexion, nombre)
+        except ValueError as error:
+            messagebox.showerror("No se pudo crear la carta", str(error), parent=self)
+            return
+        self.nivel.set("superior")
+        self.cambiar_nivel()
+        self.recargar()
+        self.carta_actual = carta_id
+        self.tabla.selection_set(str(carta_id))
+        self.tabla.see(str(carta_id))
+        self.seleccionar()
+        self.estado.configure(text=f"Carta «{nombre.strip()}» creada. Carga ahora imagen, audios y tarjeta RFID.")
 
     def recargar(self) -> None:
         self.filas = {fila["id"]: dict(fila) for fila in resumen(self.conexion)}
@@ -450,6 +567,49 @@ class AplicacionLoteria(tk.Tk):
         self._mostrar_imagen(Image.open(BytesIO(medio["contenido"])) if medio else None)
 
     # ---------- imagen ----------
+    def _redimensionar_previa(self, _evento=None) -> None:
+        self._programar_render()
+        self._dibujar_ambiente_imagen()
+
+    def _dibujar_ambiente_imagen(self) -> None:
+        """Dibuja manchas de color y órbitas suaves bajo la vista previa."""
+        if not hasattr(self, "ambiente_imagen"):
+            return
+        lienzo = self.ambiente_imagen
+        ancho, alto = max(1, lienzo.winfo_width()), max(1, lienzo.winfo_height())
+        fase = self._fase_ambiente
+        lienzo.delete("ambiente")
+        # El tramado mantiene un efecto difuso compatible con Tkinter nativo.
+        desplazamiento = ((fase % 160) - 80) / 80
+        colores = ("#B9C6FF", "#8EE3D2", "#FFD0AA") if not self.modo_oscuro else ("#405291", "#1B746C", "#824D40")
+        posiciones = ((.08 + desplazamiento * .025, .10, .45), (.66, .55 + desplazamiento * .03, .38),
+                      (.30 - desplazamiento * .02, .82, .28))
+        for color, (x, y, escala) in zip(colores, posiciones):
+            radio = min(ancho, alto) * escala
+            lienzo.create_oval(x * ancho - radio, y * alto - radio, x * ancho + radio, y * alto + radio,
+                               fill=color, outline="", stipple="gray25", tags="ambiente")
+        # Líneas orbitales muy tenues: dan movimiento incluso antes de cargar una imagen.
+        centro_x, centro_y = ancho / 2, alto / 2
+        for indice in range(3):
+            margen = 25 + indice * 18 + abs(desplazamiento) * 6
+            lienzo.create_oval(margen, margen, ancho - margen, alto - margen,
+                               outline=self.tema["borde"], width=1, tags="ambiente")
+        lienzo.tag_lower("ambiente")
+        if hasattr(self, "imagen"):
+            self.imagen.lift()
+
+    def _animar_ambiente_imagen(self) -> None:
+        if not self.winfo_exists() or not hasattr(self, "ambiente_imagen"):
+            return
+        self._fase_ambiente = (self._fase_ambiente + 1) % 160
+        self._dibujar_ambiente_imagen()
+        self.after(90, self._animar_ambiente_imagen)
+
+    def _resaltar_tile(self, tile: tk.Widget, activo: bool) -> None:
+        """Microinteracción de hover para que las tarjetas no se sientan estáticas."""
+        tile.configure(highlightbackground=self.tema["acento"] if activo else self.tema["borde"],
+                       highlightcolor=self.tema["acento"] if activo else self.tema["borde"])
+
     def _mostrar_imagen(self, imagen: Image.Image | None) -> None:
         try:
             self._imagen_pil = imagen.convert("RGBA") if imagen else None
@@ -460,6 +620,7 @@ class AplicacionLoteria(tk.Tk):
             self.imagen.configure(image="", text="Esta carta no tiene imagen")
         else:
             self._render_imagen()
+        self.imagen.lift()
         # Breve resalte del marco al cambiar de carta.
         self.marco_imagen.configure(highlightbackground=self.tema["acento"])
         self.after(350, lambda: self.marco_imagen.configure(highlightbackground=self.tema["borde"]))
@@ -474,8 +635,10 @@ class AplicacionLoteria(tk.Tk):
         self._render_pendiente = None
         if self._imagen_pil is None:
             return
-        ancho = max(80, self.marco_imagen.winfo_width() - 32)
-        alto = max(80, self.marco_imagen.winfo_height() - 32)
+        # Mantiene una vista previa completa y proporcionada: nunca recorta la
+        # imagen ni la amplía hasta robar espacio a los campos de edición.
+        ancho = min(380, max(80, self.marco_imagen.winfo_width() - 36))
+        alto = min(280, max(80, self.marco_imagen.winfo_height() - 48))
         ajustada = ImageOps.contain(self._imagen_pil, (ancho, alto), Image.Resampling.LANCZOS)
         self.imagen_tk = ImageTk.PhotoImage(ajustada)
         self.imagen.configure(image=self.imagen_tk, text="")

@@ -54,14 +54,18 @@ def crear_esquema(conexion: sqlite3.Connection) -> None:
                mazahua TEXT NOT NULL DEFAULT '',
                ingles TEXT NOT NULL DEFAULT '',
                uid_rfid TEXT,  -- UID de la tarjeta física; opcional
+               manual INTEGER NOT NULL DEFAULT 0,  -- creada desde la interfaz
                creado_en TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP
            )"""
     )
     # Migración de bases anteriores: palabras en mazahua/inglés.
     columnas = {fila["name"] for fila in conexion.execute("PRAGMA table_info(carta)")}
-    for columna in ("mazahua", "ingles"):
+    for columna in ("mazahua", "ingles", "manual"):
         if columna not in columnas:
-            conexion.execute(f"ALTER TABLE carta ADD COLUMN {columna} TEXT NOT NULL DEFAULT ''")
+            if columna == "manual":
+                conexion.execute("ALTER TABLE carta ADD COLUMN manual INTEGER NOT NULL DEFAULT 0")
+            else:
+                conexion.execute(f"ALTER TABLE carta ADD COLUMN {columna} TEXT NOT NULL DEFAULT ''")
     if "uid_rfid" not in columnas:
         conexion.execute("ALTER TABLE carta ADD COLUMN uid_rfid TEXT")
     # Una tarjeta solo puede pertenecer a una carta (varias cartas pueden no tener tarjeta).
@@ -211,7 +215,10 @@ def importar_archivos(conexion: sqlite3.Connection) -> dict[str, int]:
                 ).fetchone()[0]
             _guardar_bytes(conexion, carta_id, tipo, archivo, manual=False)
             totales[tipo] += 1
-    conexion.execute("DELETE FROM carta WHERE uid_rfid IS NULL AND id NOT IN (SELECT carta_id FROM medio)")
+    conexion.execute(
+        "DELETE FROM carta WHERE uid_rfid IS NULL AND manual = 0 "
+        "AND id NOT IN (SELECT carta_id FROM medio)"
+    )
     conexion.commit()
     return totales
 
@@ -280,6 +287,19 @@ def guardar_textos(conexion: sqlite3.Connection, carta_id: int, nombre: str, maz
     except sqlite3.IntegrityError:
         raise ValueError(f"Ya existe otra carta llamada «{nombre}».") from None
     conexion.commit()
+
+
+def crear_carta(conexion: sqlite3.Connection, nombre: str) -> int:
+    """Crea una carta vacía desde la interfaz, lista para cargar sus recursos."""
+    nombre = nombre.strip()
+    if not nombre:
+        raise ValueError("Escribe primero la palabra en español.")
+    try:
+        cursor = conexion.execute("INSERT INTO carta(nombre, manual) VALUES (?, 1)", (nombre,))
+    except sqlite3.IntegrityError:
+        raise ValueError(f"Ya existe una carta llamada «{nombre}».") from None
+    conexion.commit()
+    return cursor.lastrowid
 
 
 def cargar_medio(conexion: sqlite3.Connection, carta_id: int, tipo: str, archivo: Path | str) -> None:
